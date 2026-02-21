@@ -1,6 +1,6 @@
 // Pure text splitting utilities (no Gemini here). Providers own all Gemini logic.
 
-import { type Tiktoken, getEncoding, type TiktokenEncoding } from 'js-tiktoken';
+import { getEncoding, type Tiktoken, type TiktokenEncoding } from 'js-tiktoken';
 
 export interface TextSplitterParams {
   chunkSize: number;
@@ -18,7 +18,16 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
     this.chunkSize = params?.chunkSize ?? 50;
     this.chunkOverlap = params?.chunkOverlap ?? 10;
     // Prioritize newlines → sentences → commas → spaces → chars
-    this.separators = params?.separators ?? ['\n\n', '\n', '. ', '.', ', ', ',', ' ', ''];
+    this.separators = params?.separators ?? [
+      '\n\n',
+      '\n',
+      '. ',
+      '.',
+      ', ',
+      ',',
+      ' ',
+      '',
+    ];
     if (this.chunkOverlap >= this.chunkSize) {
       throw new Error('Cannot have chunkOverlap >= chunkSize');
     }
@@ -26,6 +35,9 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
 
   // Produce compact chunks, removing separator punctuation between merged parts.
   splitText(text: string): string[] {
+    if (this.chunkOverlap >= this.chunkSize) {
+      throw new Error('Cannot have chunkOverlap >= chunkSize');
+    }
     if (!text) {
       return [];
     }
@@ -46,7 +58,9 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
       if (sepIdx >= this.separators.length) {
         // Hard cut with overlap when no separators remain
         for (let i = 0; i < trimmed.length; i += step) {
-          const piece = trimmed.slice(i, Math.min(i + target, trimmed.length)).trim();
+          const piece = trimmed
+            .slice(i, Math.min(i + target, trimmed.length))
+            .trim();
           if (piece) {
             chunks.push(piece);
           }
@@ -58,7 +72,9 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
       if (sep === '') {
         // No separator: fallback to hard cuts
         for (let i = 0; i < trimmed.length; i += step) {
-          const piece = trimmed.slice(i, Math.min(i + target, trimmed.length)).trim();
+          const piece = trimmed
+            .slice(i, Math.min(i + target, trimmed.length))
+            .trim();
           if (piece) {
             chunks.push(piece);
           }
@@ -67,7 +83,10 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
       }
 
       // Split by current separator; when merging, use a space to avoid reintroducing punctuation
-      const parts = trimmed.split(sep).map(s => s.trim()).filter(Boolean);
+      const parts = trimmed
+        .split(sep)
+        .map(s => s.trim())
+        .filter(Boolean);
       let buffer = '';
       for (const part of parts) {
         const candidate = buffer ? `${buffer} ${part}`.trim() : part;
@@ -93,9 +112,7 @@ export class RecursiveCharacterTextSplitter implements TextSplitterParams {
 
     splitRecursive(text, 0);
     // Normalize whitespace and filter empties
-    return chunks
-      .map((c) => c.replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
+    return chunks.map(c => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
   }
 }
 
@@ -133,7 +150,9 @@ export class TiktokenTextSplitter implements TextSplitterParams {
   chunkOverlap: number;
   private tokenizer: Tiktoken;
 
-  constructor(params?: Partial<TextSplitterParams> & { encoding?: TiktokenEncoding }) {
+  constructor(
+    params?: Partial<TextSplitterParams> & { encoding?: TiktokenEncoding },
+  ) {
     this.chunkSize = params?.chunkSize ?? 1500;
     this.chunkOverlap = params?.chunkOverlap ?? 200;
     const enc = params?.encoding ?? ('o200k_base' as TiktokenEncoding);
@@ -143,8 +162,9 @@ export class TiktokenTextSplitter implements TextSplitterParams {
       // Fallback to naive tokenizer
       this.tokenizer = {
         encode: (text: string) => Array.from(new TextEncoder().encode(text)),
-        decode: (tokens: number[]) => new TextDecoder().decode(Uint8Array.from(tokens)),
-        free: () => {}
+        decode: (tokens: number[]) =>
+          new TextDecoder().decode(Uint8Array.from(tokens)),
+        free: () => {},
       } as unknown as Tiktoken;
     }
     if (this.chunkOverlap >= this.chunkSize) {
@@ -158,7 +178,11 @@ export class TiktokenTextSplitter implements TextSplitterParams {
     }
     const ids = this.tokenizer.encode(text);
     const out: string[] = [];
-    for (let i = 0; i < ids.length; i += Math.max(1, this.chunkSize - this.chunkOverlap)) {
+    for (
+      let i = 0;
+      i < ids.length;
+      i += Math.max(1, this.chunkSize - this.chunkOverlap)
+    ) {
       const slice = ids.slice(i, i + this.chunkSize);
       out.push(this.tokenizer.decode(slice).trim());
     }
