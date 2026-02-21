@@ -5,16 +5,23 @@ export function extractJsonFromText(text: string): any | null {
     return JSON.parse(text);
   } catch {}
 
-  for (const [open, close] of [
-    ['{', '}'],
-    ['[', ']'],
-  ] as const) {
-    const candidate = extractBalancedJson(text, open, close);
-    if (candidate) {
-      try {
-        return JSON.parse(candidate);
-      } catch {}
-    }
+  const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+
+  const pairs: [string, string][] =
+    firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)
+      ? [
+          ['{', '}'],
+          ['[', ']'],
+        ]
+      : [
+          ['[', ']'],
+          ['{', '}'],
+        ];
+
+  for (const [open, close] of pairs) {
+    const result = extractBalancedJson(text, open, close);
+    if (result !== null) return result;
   }
 
   return null;
@@ -24,7 +31,7 @@ function extractBalancedJson(
   text: string,
   open: string,
   close: string,
-): string | null {
+): unknown | null {
   let searchFrom = 0;
 
   while (searchFrom < text.length) {
@@ -34,7 +41,6 @@ function extractBalancedJson(
     let depth = 0;
     let inString = false;
     let escape = false;
-    let balanced = false;
 
     for (let i = start; i < text.length; i++) {
       const ch = text[i];
@@ -57,18 +63,15 @@ function extractBalancedJson(
       else if (ch === close) depth--;
 
       if (depth === 0) {
-        const candidate = text.slice(start, i + 1);
         try {
-          JSON.parse(candidate);
-          return candidate;
+          return JSON.parse(text.slice(start, i + 1));
         } catch {
-          balanced = true;
           break;
         }
       }
     }
 
-    searchFrom = balanced ? start + 1 : text.length;
+    searchFrom = start + 1;
   }
 
   return null;
