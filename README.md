@@ -1,12 +1,14 @@
 # Deep Research MCP Server
 
+[![CI](https://github.com/PaoloC68/deep-research-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/PaoloC68/deep-research-mcp-server/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node.js-v22.x-green?style=flat-square&logo=node.js)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-%5E5.9.2-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 [![Gemini API](https://img.shields.io/badge/Gemini_2.5-Flash-purple?style=flat-square&logo=google-gemini)](https://makersuite.google.com/app/apikey)
+[![Deep Research](https://img.shields.io/badge/Deep_Research-Agent-orange?style=flat-square)](https://ai.google.dev/gemini-api/docs/deep-research)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-lightgrey?style=flat-square)](https://github.com/modelcontextprotocol)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-**Your AI-Powered Research Assistant.** Conduct iterative, deep research using Google Gemini 2.5 Flash with Google Search Grounding and URL context. No web-scraping dependency is required.
+**Your AI-Powered Research Assistant.** Uses Google's official **Deep Research Agent** (`deep-research-pro-preview-12-2025`) via the Interactions API for autonomous, multi-step research with professional reports and citations.
 
 ---
 
@@ -383,10 +385,15 @@ Normalized citations to visited URLs.
 
 ## Roadmap
 
-* **Exa search integration** (behind `ENABLE_EXA_PRIMARY`), Google grounding for augmentation.
-* **Provider cleanup:** Remove Firecrawl after Exa migration (explicit approval required).
-* **CI/CD:** Add GitHub Actions for build/lint/test and badge.
-* **Examples:** Add sample reports and prompts.
+- [x] ~~Exa search integration~~ → Now using official Deep Research Agent API
+- [x] ~~Google grounding for augmentation~~ → Built into Deep Research Agent
+- [x] ~~Provider cleanup: Remove Firecrawl~~ → No external scraping dependency
+- [x] **CI/CD:** GitHub Actions for build/lint/test ✓
+- [x] **Examples:** Sample reports and prompts in `/examples` ✓
+- [ ] **Streaming progress:** Real-time research progress updates
+- [ ] **Caching layer:** Redis-based caching for repeated queries
+- [ ] **Rate limiting:** Built-in rate limiting and quota management
+- [ ] **Metrics:** Research analytics and performance monitoring
 
 ## Troubleshooting
 
