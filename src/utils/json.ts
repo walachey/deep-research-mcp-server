@@ -5,13 +5,15 @@ export function extractJsonFromText(text: string): any | null {
     return JSON.parse(text);
   } catch {}
 
-  const result =
-    extractBalancedJson(text, '{', '}') ?? extractBalancedJson(text, '[', ']');
-  if (result) {
-    try {
-      return JSON.parse(result);
-    } catch {
-      return null;
+  for (const [open, close] of [
+    ['{', '}'],
+    ['[', ']'],
+  ] as const) {
+    const candidate = extractBalancedJson(text, open, close);
+    if (candidate) {
+      try {
+        return JSON.parse(candidate);
+      } catch {}
     }
   }
 
@@ -23,36 +25,50 @@ function extractBalancedJson(
   open: string,
   close: string,
 ): string | null {
-  const start = text.indexOf(open);
-  if (start === -1) return null;
+  let searchFrom = 0;
 
-  let depth = 0;
-  let inString = false;
-  let escape = false;
+  while (searchFrom < text.length) {
+    const start = text.indexOf(open, searchFrom);
+    if (start === -1) return null;
 
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let balanced = false;
 
-    if (escape) {
-      escape = false;
-      continue;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === open) depth++;
+      else if (ch === close) depth--;
+
+      if (depth === 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          JSON.parse(candidate);
+          return candidate;
+        } catch {
+          balanced = true;
+          break;
+        }
+      }
     }
-    if (ch === '\\' && inString) {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
 
-    if (ch === open) depth++;
-    else if (ch === close) depth--;
-
-    if (depth === 0) {
-      return text.slice(start, i + 1);
-    }
+    searchFrom = balanced ? start + 1 : text.length;
   }
 
   return null;

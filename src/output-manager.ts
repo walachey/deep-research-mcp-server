@@ -18,8 +18,8 @@ export class OutputManager {
       this.initialized = true;
     } else {
       this.initialized = false;
-      console.warn(
-        'Not running in a TTY environment. Progress updates will be disabled.',
+      process.stderr.write(
+        'Not running in a TTY environment. Progress updates will be disabled.\n',
       );
     }
   }
@@ -56,14 +56,17 @@ export class OutputManager {
       clearTimeout(this.logTimer);
       this.logTimer = undefined;
     }
-    if (!this.initialized) {
+    if (!this.initialized || this.logQueue.length === 0) {
       this.logQueue = [];
       return;
     }
-    process.stdout.write(TERMINAL_CONTROLS.savePos);
-    process.stdout.write(this.logQueue.join('\n') + '\n');
-    this.logQueue = [];
-    process.stdout.write(TERMINAL_CONTROLS.restorePos);
+    try {
+      process.stdout.write(TERMINAL_CONTROLS.savePos);
+      process.stdout.write(this.logQueue.join('\n') + '\n');
+      this.logQueue = [];
+    } finally {
+      process.stdout.write(TERMINAL_CONTROLS.restorePos);
+    }
   }
 
   static logCacheEviction(value: unknown) {
@@ -75,10 +78,12 @@ export class OutputManager {
       return;
     }
 
+    const pct = (v: number, t: number) =>
+      t > 0 ? Math.round((v / t) * 100) : 0;
     this.progressArea = [
-      `Depth:    [${this.getProgressBar(progress.totalDepth - progress.currentDepth, progress.totalDepth)}] ${Math.round(((progress.totalDepth - progress.currentDepth) / progress.totalDepth) * 100)}%`,
-      `Breadth:  [${this.getProgressBar(progress.totalBreadth - progress.currentBreadth, progress.totalBreadth)}] ${Math.round(((progress.totalBreadth - progress.currentBreadth) / progress.totalBreadth) * 100)}%`,
-      `Queries:  [${this.getProgressBar(progress.completedQueries, progress.totalQueries)}] ${Math.round((progress.completedQueries / progress.totalQueries) * 100)}%`,
+      `Depth:    [${this.getProgressBar(progress.totalDepth - progress.currentDepth, progress.totalDepth)}] ${pct(progress.totalDepth - progress.currentDepth, progress.totalDepth)}%`,
+      `Breadth:  [${this.getProgressBar(progress.totalBreadth - progress.currentBreadth, progress.totalBreadth)}] ${pct(progress.totalBreadth - progress.currentBreadth, progress.totalBreadth)}%`,
+      `Queries:  [${this.getProgressBar(progress.completedQueries, progress.totalQueries)}] ${pct(progress.completedQueries, progress.totalQueries)}%`,
       progress.currentQuery ? `Current:  ${progress.currentQuery}` : '',
     ];
     this.drawProgress();
@@ -88,6 +93,7 @@ export class OutputManager {
     const width = process.stdout.columns
       ? Math.min(30, process.stdout.columns - 20)
       : 30;
+    if (total <= 0) return ' '.repeat(width);
     const filled = Math.round((width * value) / total);
     return '█'.repeat(filled) + ' '.repeat(width - filled);
   }
