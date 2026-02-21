@@ -1,28 +1,61 @@
 export function extractJsonFromText(text: string): any | null {
-  if (!text) {
-    return null; // Handle empty input text
-  }
-  try {
-    // Regex to extract JSON object (using non-greedy match and allowing for whitespace)
-    const jsonRegex = /\{[\s\S]*?\}/; // Non-greedy match for JSON object
-    const match = text.match(jsonRegex);
+  if (!text) return null;
 
-    if (match && match[0]) {
-      const jsonString = match[0];
-      try {
-        return JSON.parse(jsonString); // Attempt to parse the extracted string as JSON
-      } catch (jsonParseError) {
-        console.error("Error parsing JSON string:", jsonParseError);
-        return null; // Return null if JSON parsing fails
-      }
-    } else {
-      console.warn("No JSON object found in text using regex.");
-      return null; // Return null if no JSON object is found
+  try {
+    return JSON.parse(text);
+  } catch {}
+
+  const result =
+    extractBalancedJson(text, '{', '}') ?? extractBalancedJson(text, '[', ']');
+  if (result) {
+    try {
+      return JSON.parse(result);
+    } catch {
+      return null;
     }
-  } catch (regexError) {
-    console.error("Regex error during JSON extraction:", regexError);
-    return null; // Return null if regex matching fails
   }
+
+  return null;
+}
+
+function extractBalancedJson(
+  text: string,
+  open: string,
+  close: string,
+): string | null {
+  const start = text.indexOf(open);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === open) depth++;
+    else if (ch === close) depth--;
+
+    if (depth === 0) {
+      return text.slice(start, i + 1);
+    }
+  }
+
+  return null;
 }
 
 export function isValidJSON(jsonString: string): boolean {
@@ -42,7 +75,10 @@ export function safeParseJSON<T>(jsonString: string, defaultValue: T): T {
   }
 }
 
-export function stringifyJSON(jsonObject: any, prettyPrint: boolean = false): string | null {
+export function stringifyJSON(
+  jsonObject: any,
+  prettyPrint: boolean = false,
+): string | null {
   try {
     if (prettyPrint) {
       return JSON.stringify(jsonObject, null, 2); // Pretty print with indentation of 2 spaces
