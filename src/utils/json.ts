@@ -8,6 +8,8 @@ export function extractJsonFromText(text: string): any | null {
   const firstBrace = text.indexOf('{');
   const firstBracket = text.indexOf('[');
 
+  if (firstBrace === -1 && firstBracket === -1) return null;
+
   const pairs: [string, string][] =
     firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)
       ? [
@@ -31,7 +33,7 @@ function extractBalancedJson(
   text: string,
   open: string,
   close: string,
-): unknown | null {
+): unknown {
   let searchFrom = 0;
 
   while (searchFrom < text.length) {
