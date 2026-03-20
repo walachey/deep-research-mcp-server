@@ -1,9 +1,11 @@
 import { config } from 'dotenv';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { runDeepResearch, continueResearch, getInteraction, type DeepResearchProgress } from './deep-research-agent.js';
 import { LRUCache } from 'lru-cache';
@@ -214,8 +216,101 @@ server.registerResource(
   })
 );
 
-// Start the MCP server
-const transport = new StdioServerTransport();
-server.connect(transport)
-  .then(() => { logger.info('Deep Research Agent MCP server running'); })
-  .catch((err: Error) => { logger.error({ err }, 'MCP server error'); });
+const TRANSPORT = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
+
+function parseListEnv(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const items = value
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+async function startStreamableHttpServer(): Promise<void> {
+  const port = Number.parseInt(process.env.MCP_HTTP_PORT || '3333', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid MCP_HTTP_PORT value: ${process.env.MCP_HTTP_PORT}`);
+  }
+  const host = process.env.MCP_HTTP_HOST || '127.0.0.1';
+  const enableJsonResponse = process.env.MCP_HTTP_ENABLE_JSON_RESPONSE === 'true';
+  const enableDnsRebindingProtection = process.env.MCP_HTTP_ENABLE_DNS_REBINDING_PROTECTION === 'true';
+  const allowedHosts = parseListEnv(process.env.MCP_HTTP_ALLOWED_HOSTS);
+  const allowedOrigins = parseListEnv(process.env.MCP_HTTP_ALLOWED_ORIGINS);
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse,
+    enableDnsRebindingProtection,
+    allowedHosts,
+    allowedOrigins,
+  });
+
+  transport.onerror = (error: Error) => {
+    logger.error({ err: error }, 'Streamable HTTP transport error');
+  };
+
+  const httpServer = createHttpServer(async (req, res) => {
+    try {
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      logger.error({ err: error }, 'Failed to handle HTTP request');
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+      }
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Internal Server Error"
+        },
+        id: null
+      }));
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(port, host, () => resolve());
+  });
+
+  logger.info({ host, port }, 'Deep Research Agent MCP server listening (streamable-http)');
+
+  const shutdown = async () => {
+    logger.info('Received shutdown signal, closing HTTP transport');
+    await transport.close();
+    if (httpServer.listening) {
+      httpServer.close();
+    }
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+
+  await server.connect(transport);
+  logger.info('Streamable HTTP transport closed');
+  if (httpServer.listening) {
+    httpServer.close();
+  }
+}
+
+async function startStdioServer(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  logger.info('Stdio transport closed');
+}
+
+async function start(): Promise<void> {
+  if (TRANSPORT === 'streamable-http') {
+    await startStreamableHttpServer();
+  } else {
+    await startStdioServer();
+  }
+}
+
+start()
+  .catch((err: Error) => {
+    logger.error({ err }, 'MCP server error');
+    process.exitCode = 1;
+  });
