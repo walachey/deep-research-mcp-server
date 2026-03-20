@@ -278,21 +278,38 @@ async function startStreamableHttpServer(): Promise<void> {
 
   logger.info({ host, port }, 'Deep Research Agent MCP server listening (streamable-http)');
 
-  const shutdown = async () => {
-    logger.info('Received shutdown signal, closing HTTP transport');
-    await transport.close();
+  let shuttingDown = false;
+  const shutdown = async (signal?: NodeJS.Signals) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    logger.info({ signal }, 'Received shutdown signal, closing HTTP transport');
+    try {
+      await transport.close();
+    } catch (error) {
+      logger.error({ err: error }, 'Error while closing Streamable HTTP transport');
+    }
     if (httpServer.listening) {
-      httpServer.close();
+      httpServer.close(err => {
+        if (err) {
+          logger.error({ err }, 'Error while closing HTTP server');
+        }
+      });
     }
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 
   await server.connect(transport);
-  logger.info('Streamable HTTP transport closed');
-  if (httpServer.listening) {
-    httpServer.close();
-  }
+  logger.info('Streamable HTTP transport ready');
+
+  await new Promise<void>((resolve) => {
+    httpServer.on('close', () => {
+      logger.info('Streamable HTTP transport closed');
+      resolve();
+    });
+  });
 }
 
 async function startStdioServer(): Promise<void> {
