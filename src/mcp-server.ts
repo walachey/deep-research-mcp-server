@@ -229,6 +229,19 @@ function parseListEnv(value: string | undefined): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+type StreamableHttpServerConfig = {
+  port: number;
+  host: string;
+  enableJsonResponse: boolean;
+  enableDnsRebindingProtection: boolean;
+  allowedHosts?: string[];
+  allowedOrigins?: string[];
+};
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function startStreamableHttpServer(): Promise<void> {
   const port = Number.parseInt(process.env.MCP_HTTP_PORT || '3333', 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -240,12 +253,57 @@ async function startStreamableHttpServer(): Promise<void> {
   const allowedHosts = parseListEnv(process.env.MCP_HTTP_ALLOWED_HOSTS);
   const allowedOrigins = parseListEnv(process.env.MCP_HTTP_ALLOWED_ORIGINS);
 
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+  const config: StreamableHttpServerConfig = {
+    port,
+    host,
     enableJsonResponse,
     enableDnsRebindingProtection,
     allowedHosts,
     allowedOrigins,
+  };
+
+  let restartCount = 0;
+
+  while (true) {
+    let exitReason: 'shutdown' | 'restart' = 'restart';
+    try {
+      exitReason = await runStreamableHttpServerOnce(config);
+    } catch (error) {
+      logger.error({ err: error }, 'Streamable HTTP server crashed');
+    }
+
+    if (exitReason === 'shutdown') {
+      break;
+    }
+
+    restartCount += 1;
+    const delayMs = Math.min(30_000, 100 * 2 ** Math.min(restartCount, 8));
+    logger.warn({ attempt: restartCount, delayMs }, 'Streamable HTTP server stopped unexpectedly, attempting restart');
+    await delay(delayMs);
+  }
+}
+
+async function startStdioServer(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  logger.info('Stdio transport closed');
+}
+
+async function start(): Promise<void> {
+  if (TRANSPORT === 'streamable-http') {
+    await startStreamableHttpServer();
+  } else {
+    await startStdioServer();
+  }
+}
+
+async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): Promise<'shutdown' | 'restart'> {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse: config.enableJsonResponse,
+    enableDnsRebindingProtection: config.enableDnsRebindingProtection,
+    allowedHosts: config.allowedHosts,
+    allowedOrigins: config.allowedOrigins,
   });
 
   transport.onerror = (error: Error) => {
@@ -271,20 +329,16 @@ async function startStreamableHttpServer(): Promise<void> {
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.once('error', reject);
-    httpServer.listen(port, host, () => resolve());
-  });
-
-  logger.info({ host, port }, 'Deep Research Agent MCP server listening (streamable-http)');
-
   let shuttingDown = false;
+  const cleanupSignalHandlers: Array<() => void> = [];
+
   const shutdown = async (signal?: NodeJS.Signals) => {
     if (shuttingDown) {
       return;
     }
     shuttingDown = true;
     logger.info({ signal }, 'Received shutdown signal, closing HTTP transport');
+    cleanupSignalHandlers.forEach(remove => remove());
     try {
       await transport.close();
     } catch (error) {
@@ -298,32 +352,43 @@ async function startStreamableHttpServer(): Promise<void> {
       });
     }
   };
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
 
-  await server.connect(transport);
-  logger.info('Streamable HTTP transport ready');
+  const sigtermHandler = (signal: NodeJS.Signals) => { void shutdown(signal); };
+  const sigintHandler = (signal: NodeJS.Signals) => { void shutdown(signal); };
+  process.on('SIGTERM', sigtermHandler);
+  process.on('SIGINT', sigintHandler);
+  cleanupSignalHandlers.push(() => process.off('SIGTERM', sigtermHandler));
+  cleanupSignalHandlers.push(() => process.off('SIGINT', sigintHandler));
 
-  await new Promise<void>((resolve) => {
-    httpServer.on('close', () => {
-      logger.info('Streamable HTTP transport closed');
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once('error', reject);
+      httpServer.listen(config.port, config.host, () => resolve());
     });
-  });
-}
 
-async function startStdioServer(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  logger.info('Stdio transport closed');
-}
+    logger.info({ host: config.host, port: config.port }, 'Deep Research Agent MCP server listening (streamable-http)');
 
-async function start(): Promise<void> {
-  if (TRANSPORT === 'streamable-http') {
-    await startStreamableHttpServer();
-  } else {
-    await startStdioServer();
+    await server.connect(transport);
+    logger.info('Streamable HTTP transport ready');
+
+    await new Promise<void>((resolve) => {
+      httpServer.on('close', () => {
+        logger.info('Streamable HTTP transport closed');
+        resolve();
+      });
+    });
+  } finally {
+    cleanupSignalHandlers.forEach(remove => remove());
+    if (!shuttingDown) {
+      try {
+        await transport.close();
+      } catch (error) {
+        logger.error({ err: error }, 'Error while closing Streamable HTTP transport');
+      }
+    }
   }
+
+  return shuttingDown ? 'shutdown' : 'restart';
 }
 
 start()
