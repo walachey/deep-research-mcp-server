@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpServer, type IncomingMessage } from 'node:http';
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -232,6 +232,19 @@ function parseListEnv(value: string | undefined): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+function getSessionIdFromRequest(req: IncomingMessage): string | undefined {
+  if (!req.url) {
+    return undefined;
+  }
+  try {
+    const base = req.headers.host ? `http://${req.headers.host}` : 'http://localhost';
+    const url = new URL(req.url, base);
+    return url.searchParams.get('sessionId') ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type StreamableHttpServerConfig = {
   port: number;
   host: string;
@@ -323,13 +336,32 @@ async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): 
     logger.error({ err: error }, 'Streamable HTTP transport error');
   };
 
-  let sessionEnded = false;
+  let closeReason: StreamableHttpRunResult = 'restart';
+  let closingPromise: Promise<void> | undefined;
+
   const httpServer = createHttpServer(async (req, res) => {
-    const isDelete = req.method === 'DELETE';
+    const sessionId = getSessionIdFromRequest(req);
+    const context = { method: req.method, url: req.url, sessionId };
+
+    if (req.method === 'POST' && !sessionId) {
+      logger.info(context, 'Streamable HTTP session initialization request received');
+    } else if (req.method === 'GET') {
+      logger.info(context, 'Streamable HTTP GET (SSE) request received');
+    } else if (req.method === 'DELETE') {
+      logger.info(context, 'Streamable HTTP DELETE request received');
+    }
+
     try {
       await transport.handleRequest(req, res);
+      if (req.method === 'GET') {
+        logger.info(context, 'Streamable HTTP SSE stream established');
+      } else if (req.method === 'DELETE') {
+        logger.info(context, 'Streamable HTTP DELETE processed, closing session');
+        closeReason = closeReason === 'shutdown' ? 'shutdown' : 'session_end';
+        void closeServer('session_end');
+      }
     } catch (error) {
-      logger.error({ err: error }, 'Failed to handle HTTP request');
+      logger.error({ ...context, err: error }, 'Failed to handle HTTP request');
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' });
       }
@@ -341,54 +373,59 @@ async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): 
         },
         id: null
       }));
-      return;
-    }
-
-    if (isDelete) {
-      sessionEnded = true;
-      logger.info('Streamable HTTP session ended, restarting server to accept new connections');
-      setImmediate(() => {
-        if (httpServer.listening) {
-          httpServer.close(err => {
-            if (err) {
-              logger.error({ err }, 'Error while closing HTTP server after session end');
-            }
-          });
-        }
-      });
     }
   });
 
-  let shuttingDown = false;
-  const cleanupSignalHandlers: Array<() => void> = [];
-
-  const shutdown = async (signal?: NodeJS.Signals) => {
-    if (shuttingDown) {
+  const closeHttpServer = async (): Promise<void> => {
+    if (!httpServer.listening) {
       return;
     }
-    shuttingDown = true;
-    logger.info({ signal }, 'Received shutdown signal, closing HTTP transport');
-    cleanupSignalHandlers.forEach(remove => remove());
-    try {
-      await transport.close();
-    } catch (error) {
-      logger.error({ err: error }, 'Error while closing Streamable HTTP transport');
-    }
-    if (httpServer.listening) {
+    await new Promise<void>((resolve) => {
       httpServer.close(err => {
         if (err) {
           logger.error({ err }, 'Error while closing HTTP server');
         }
+        resolve();
       });
-    }
+    });
   };
 
-  const sigtermHandler = (signal: NodeJS.Signals) => { void shutdown(signal); };
-  const sigintHandler = (signal: NodeJS.Signals) => { void shutdown(signal); };
+  const closeServer = async (reason: StreamableHttpRunResult, signal?: NodeJS.Signals): Promise<void> => {
+    if (closingPromise) {
+      if (reason === 'shutdown') {
+        closeReason = 'shutdown';
+      } else if (closeReason === 'restart' && reason === 'session_end') {
+        closeReason = 'session_end';
+      }
+      return closingPromise;
+    }
+    closeReason = reason;
+    logger.info({ reason, signal }, 'Closing Streamable HTTP server');
+    closingPromise = (async () => {
+      try {
+        await transport.close();
+      } catch (error) {
+        logger.error({ err: error }, 'Error while closing Streamable HTTP transport');
+      }
+      await closeHttpServer();
+    })();
+    return closingPromise;
+  };
+
+  const cleanupSignalHandlers: Array<() => void> = [];
+  const sigtermHandler = (signal: NodeJS.Signals) => { void closeServer('shutdown', signal); };
+  const sigintHandler = (signal: NodeJS.Signals) => { void closeServer('shutdown', signal); };
   process.on('SIGTERM', sigtermHandler);
   process.on('SIGINT', sigintHandler);
   cleanupSignalHandlers.push(() => process.off('SIGTERM', sigtermHandler));
   cleanupSignalHandlers.push(() => process.off('SIGINT', sigintHandler));
+
+  const httpClosedPromise = new Promise<void>((resolve) => {
+    httpServer.on('close', () => {
+      logger.info('Streamable HTTP server closed connection');
+      resolve();
+    });
+  });
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -398,33 +435,15 @@ async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): 
 
     logger.info({ host: config.host, port: config.port }, 'Deep Research Agent MCP server listening (streamable-http)');
 
-    await server.connect(transport);
-    logger.info('Streamable HTTP transport ready');
-
-    await new Promise<void>((resolve) => {
-      httpServer.on('close', () => {
-        logger.info('Streamable HTTP transport closed');
-        resolve();
-      });
-    });
+    const serverPromise = server.connect(transport);
+    await serverPromise;
   } finally {
+    await closeServer(closeReason);
+    await httpClosedPromise;
     cleanupSignalHandlers.forEach(remove => remove());
-    if (!shuttingDown) {
-      try {
-        await transport.close();
-      } catch (error) {
-        logger.error({ err: error }, 'Error while closing Streamable HTTP transport');
-      }
-    }
   }
 
-  if (shuttingDown) {
-    return 'shutdown';
-  }
-  if (sessionEnded) {
-    return 'session_end';
-  }
-  return 'restart';
+  return closeReason;
 }
 
 start()
