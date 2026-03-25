@@ -338,6 +338,12 @@ async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): 
 
   let closeReason: StreamableHttpRunResult = 'restart';
   let closingPromise: Promise<void> | undefined;
+  const transportClosed = new Promise<void>((resolve) => {
+    transport.onclose = () => {
+      logger.info({ reason: closeReason }, 'Streamable HTTP transport closed');
+      resolve();
+    };
+  });
 
   const httpServer = createHttpServer(async (req, res) => {
     const sessionId = getSessionIdFromRequest(req);
@@ -435,8 +441,8 @@ async function runStreamableHttpServerOnce(config: StreamableHttpServerConfig): 
 
     logger.info({ host: config.host, port: config.port }, 'Deep Research Agent MCP server listening (streamable-http)');
 
-    const serverPromise = server.connect(transport);
-    await serverPromise;
+    await server.connect(transport);
+    await transportClosed;
   } finally {
     await closeServer(closeReason);
     await httpClosedPromise;
