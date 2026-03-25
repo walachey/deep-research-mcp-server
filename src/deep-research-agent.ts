@@ -68,16 +68,32 @@ export async function runDeepResearch(options: DeepResearchOptions): Promise<Dee
   }
 
   try {
-    // Create interaction with Deep Research Agent
-    const interaction = await client.interactions.create({
+    const baseRequest = {
       agent: DEEP_RESEARCH_AGENT,
       input: input,
       background: true, // Required for agents
-      store: true, // Required for background
-      ...(stream ? { stream: true } : {})
-    } as { agent: string; input: string; background: boolean; store: boolean; stream?: boolean });
+      store: true // Required for background
+    } satisfies Parameters<typeof client.interactions.create>[0];
 
-    const interactionId = (interaction as any).interaction?.id || (interaction as any).id || 'unknown';
+    // Create interaction with Deep Research Agent
+    if (stream) {
+      const interactionStream = await client.interactions.create({
+        ...baseRequest,
+        stream: true
+      } as Parameters<typeof client.interactions.create>[0]);
+
+      return await handleStreamingInteraction(interactionStream, onProgress);
+    }
+
+    const interaction = await client.interactions.create(baseRequest);
+    const interactionId =
+      (interaction as { interaction?: { id?: string } }).interaction?.id ||
+      (interaction as { id?: string }).id;
+
+    if (!interactionId) {
+      throw new Error('Deep Research Agent did not return an interaction ID');
+    }
+
     logger.info({ interactionId }, 'Deep Research interaction created');
 
     // Report initial progress
@@ -88,11 +104,6 @@ export async function runDeepResearch(options: DeepResearchOptions): Promise<Dee
     });
 
     // If streaming, process the stream
-    if (stream) {
-      return await handleStreamingInteraction(interaction, interactionId, onProgress);
-    }
-
-    // Otherwise, poll for completion
     return await pollForCompletion(interactionId, onProgress);
 
   } catch (error) {
@@ -107,30 +118,40 @@ export async function runDeepResearch(options: DeepResearchOptions): Promise<Dee
  */
 async function handleStreamingInteraction(
   stream: unknown,
-  interactionId: string,
   onProgress?: (progress: DeepResearchProgress) => void
 ): Promise<DeepResearchResult> {
+  let interactionId: string | undefined;
+  let lastEventId: string | undefined;
   let lastPercentage = 0;
   let fullContent = '';
+  let finalStatus: DeepResearchResult['status'] = 'running';
 
   try {
     // Process stream chunks
-    for await (const chunk of stream as AsyncIterable<{ 
-      eventType?: string; 
+    for await (const chunk of stream as AsyncIterable<{
+      eventType?: string;
       event_type?: string;
+      event_id?: string;
       delta?: { type?: string; text?: string; content?: { text?: string } };
       interaction?: { id?: string; status?: string };
       status?: string;
       outputs?: Array<{ text?: string; type?: string }>;
     }>) {
       const eventType = chunk.eventType || chunk.event_type;
+      if (chunk.event_id) {
+        lastEventId = chunk.event_id;
+      }
 
       // Handle different event types
       if (eventType === 'interaction.start' || eventType === 'interaction_start') {
+        if (chunk.interaction?.id) {
+          interactionId = chunk.interaction.id;
+          logger.info({ interactionId }, 'Deep Research interaction created');
+        }
         onProgress?.({
           status: 'running',
           message: 'Research started',
-          interactionId: chunk.interaction?.id || interactionId
+          interactionId
         });
       } else if (eventType === 'content.delta' || eventType === 'content_delta') {
         // Text content
@@ -165,12 +186,16 @@ async function handleStreamingInteraction(
             fullContent = textOutput.text;
           }
         }
+        finalStatus = 'completed';
         
         onProgress?.({
           status: 'completed',
           percentage: 100,
           message: 'Research completed'
         });
+      } else if (eventType === 'interaction.failed' || eventType === 'interaction_failed') {
+        finalStatus = 'failed';
+        throw new Error('Deep Research interaction failed');
       } else if (eventType === 'progress' || eventType === 'status') {
         // Generic progress update
         onProgress?.({
@@ -181,13 +206,23 @@ async function handleStreamingInteraction(
       }
     }
 
+    if (!interactionId) {
+      throw new Error('Stream ended before receiving an interaction ID');
+    }
+
+    if (finalStatus !== 'completed') {
+      logger.warn({ interactionId, finalStatus }, 'Stream ended without completion, polling for result');
+      return await pollForCompletion(interactionId, onProgress);
+    }
+
     return {
       content: fullContent,
       interactionId,
-      status: 'completed',
+      status: finalStatus,
       metadata: {
         agent: DEEP_RESEARCH_AGENT,
-        streaming: true
+        streaming: true,
+        lastEventId
       }
     };
 
@@ -196,7 +231,10 @@ async function handleStreamingInteraction(
     logger.error({ err: errorMessage }, 'Streaming error');
     
     // Fall back to polling if streaming fails
-    logger.info({ interactionId }, 'Falling back to polling');
+    if (!interactionId) {
+      throw new Error(errorMessage);
+    }
+    logger.info({ interactionId, lastEventId }, 'Falling back to polling');
     return await pollForCompletion(interactionId, onProgress);
   }
 }
