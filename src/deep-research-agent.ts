@@ -77,7 +77,7 @@ export async function runDeepResearch(options: DeepResearchOptions): Promise<Dee
       ...(stream ? { stream: true } : {})
     } as { agent: string; input: string; background: boolean; store: boolean; stream?: boolean });
 
-    const interactionId = (interaction as { id?: string }).id || 'unknown';
+    const interactionId = (interaction as any).interaction?.id || (interaction as any).id || 'unknown';
     logger.info({ interactionId }, 'Deep Research interaction created');
 
     // Report initial progress
